@@ -335,15 +335,15 @@ model:
 Or for custom endpoints, add it per-model:
 
 ```yaml
-custom_providers:
-  - name: "My Server"
-    base_url: "http://localhost:11434/v1"
+providers:
+  my-server:
+    api: http://localhost:11434/v1
     models:
       qwen3.5:27b:
         context_length: 32768
 ```
 
-See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
+See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options. See also the [Named Custom Providers](../integrations/providers.md#named-custom-providers) section for the recommended `providers:` dict format.
 
 ---
 

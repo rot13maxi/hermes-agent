@@ -1191,7 +1191,26 @@ custom_providers:
 
 ### Named Custom Providers
 
-If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
+If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`. There are two equivalent formats — the `providers:` dict is preferred for its simplicity:
+
+**Recommended — `providers:` dict** (each key becomes the provider name):
+
+```yaml
+providers:
+  local:
+    api: http://localhost:8080/v1
+    # api_key omitted — Hermes uses "no-key-required" for keyless local servers
+  work:
+    api: https://gpu-server.internal.corp/v1
+    key_env: CORP_API_KEY
+    api_mode: chat_completions   # optional, auto-detected from URL
+  anthropic-proxy:
+    api: https://proxy.example.com/anthropic
+    key_env: ANTHROPIC_PROXY_KEY
+    api_mode: anthropic_messages  # for Anthropic-compatible proxies
+```
+
+**Legacy — `custom_providers:` list** (each entry needs an explicit `name:` field):
 
 ```yaml
 custom_providers:
@@ -1201,12 +1220,33 @@ custom_providers:
   - name: work
     base_url: https://gpu-server.internal.corp/v1
     key_env: CORP_API_KEY
-    api_mode: chat_completions   # optional, auto-detected from URL
+    api_mode: chat_completions
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
-    api_mode: anthropic_messages  # for Anthropic-compatible proxies
+    api_mode: anthropic_messages
 ```
+
+Both formats are functionally identical at runtime. The `providers:` dict is easier to read and edit because the key name doubles as the provider identifier — you don't need a separate `name:` field.
+
+**Available fields per provider entry:**
+
+| Field | Description |
+|-------|-------------|
+| `api` / `base_url` / `url` | OpenAI-compatible endpoint URL (pick one) |
+| `key_env` | Name of env var in `~/.hermes/.env` that holds the API key (**preferred** — keeps secrets out of config.yaml) |
+| `api_key` | Inline API key (not recommended — YAML serialization can mangle values with special characters) |
+| `default_model` | Default model ID for this provider |
+| `api_mode` / `transport` | `chat_completions` (default), `codex_responses`, or `anthropic_messages` |
+| `models` | Dict of model names with per-model overrides (e.g. `context_length`) |
+| `context_length` | Provider-wide context length override in tokens |
+| `rate_limit_delay` | Seconds to wait between requests to this provider |
+| `request_timeout_seconds` | Per-provider HTTP request timeout in seconds |
+| `stale_timeout_seconds` | Seconds before a connection to this provider is considered stale |
+
+:::tip Security: always use `key_env`, never `api_key`
+Put your API keys in `~/.hermes/.env` and reference them via `key_env`. This keeps secrets out of `config.yaml`, which is human-readable YAML that gets rewritten by `hermes update` and other config operations. Inline `api_key` values can be mangled during YAML serialization if they contain special characters.
+:::
 
 Switch between them mid-session with the triple syntax:
 
@@ -1218,11 +1258,64 @@ Switch between them mid-session with the triple syntax:
 
 You can also select named custom providers from the interactive `hermes model` menu.
 
+### Using Named Providers in Auxiliary Tasks
+
+Named custom providers work everywhere built-in providers work — including all auxiliary tasks (compression, vision, session search, web extraction, etc.). Just reference them with the `custom:` prefix in the `auxiliary:` section of `config.yaml`:
+
+```yaml
+providers:
+  spark:
+    api: https://spark-1.local/v1
+    key_env: SPARK_API_KEY
+    default_model: qwen3.6-27b-fp8
+    api_mode: chat_completions
+
+# Set your main model to use the named provider:
+model:
+  provider: custom:spark
+  default: qwen3.6-27b-fp8
+
+# Route auxiliary tasks to the same named provider:
+auxiliary:
+  compression:
+    provider: custom:spark
+    model: ""   # empty = use provider's default_model
+  vision:
+    provider: custom:spark
+  session_search:
+    provider: custom:spark
+```
+
+This avoids repeating your base URL and API key across every auxiliary section. The `custom:name` reference resolves the endpoint and credentials from your `providers:` dict entry once.
+
+:::tip Never put API keys inline in auxiliary sections
+Don't do this:
+```yaml
+auxiliary:
+  compression:
+    provider: custom
+    base_url: https://spark-1.local/v1
+    api_key: sk-you...here   # ← can be mangled by YAML serialization
+```
+
+Do this instead:
+```yaml
+providers:
+  spark:
+    api: https://spark-1.local/v1
+    key_env: SPARK_API_KEY    # key lives in ~/.hermes/.env
+
+auxiliary:
+  compression:
+    provider: custom:spark
+```
+:::
+
 ---
 
 ### Cookbook: Together AI, Groq, Perplexity
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1230,9 +1323,9 @@ Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices signi
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: together
-    base_url: https://api.together.xyz/v1
+providers:
+  together:
+    api: https://api.together.xyz/v1
     key_env: TOGETHER_API_KEY
     # api_mode: chat_completions  # default — no need to set
 
@@ -1262,9 +1355,9 @@ Ultra-fast inference (~500 tok/s on Llama-3.3-70B). Small catalog but strong for
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: groq
-    base_url: https://api.groq.com/openai/v1
+providers:
+  groq:
+    api: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
 
 model:
@@ -1283,9 +1376,9 @@ Useful when you want a model that does live web search and citation automaticall
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: perplexity
-    base_url: https://api.perplexity.ai
+providers:
+  perplexity:
+    api: https://api.perplexity.ai
     key_env: PERPLEXITY_API_KEY
 
 model:
@@ -1303,15 +1396,15 @@ PERPLEXITY_API_KEY=your-perplexity-key
 The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
-custom_providers:
-  - name: together
-    base_url: https://api.together.xyz/v1
+providers:
+  together:
+    api: https://api.together.xyz/v1
     key_env: TOGETHER_API_KEY
-  - name: groq
-    base_url: https://api.groq.com/openai/v1
+  groq:
+    api: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
-  - name: perplexity
-    base_url: https://api.perplexity.ai
+  perplexity:
+    api: https://api.perplexity.ai
     key_env: PERPLEXITY_API_KEY
 
 model:
