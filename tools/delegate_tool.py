@@ -574,6 +574,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    response_schema: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -596,18 +597,30 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
-    parts.append(
-        "\nComplete this task using the tools available to you. "
-        "When finished, provide a clear, concise summary of:\n"
-        "- What you did\n"
-        "- What you found or accomplished\n"
-        "- Any files you created or modified\n"
-        "- Any issues encountered\n\n"
-        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
-        "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
-        "Be thorough but concise -- your response is returned to the "
-        "parent agent as a summary."
-    )
+    if response_schema:
+        parts.append(
+            "\nYOUR OUTPUT MUST BE VALID JSON matching this schema:\n"
+            f"{json.dumps(response_schema, indent=2)}\n\n"
+            "Return ONLY the JSON object. Do NOT include markdown code fences, "
+            "prose, or any text outside the JSON.\n\n"
+            "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+            "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+            "Be thorough but concise -- your response is returned to the "
+            "parent agent as a summary."
+        )
+    else:
+        parts.append(
+            "\nComplete this task using the tools available to you. "
+            "When finished, provide a clear, concise summary of:\n"
+            "- What you did\n"
+            "- What you found or accomplished\n"
+            "- Any files you created or modified\n"
+            "- Any issues encountered\n\n"
+            "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+            "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+            "Be thorough but concise -- your response is returned to the "
+            "parent agent as a summary."
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -888,6 +901,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional JSON schema the child's output must conform to.
+    response_schema: Optional[Dict[str, Any]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -975,6 +990,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        response_schema=response_schema,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1147,6 +1163,10 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
 
+    # Stash response schema so _run_single_child can validate output
+    if response_schema is not None:
+        child._response_schema = response_schema
+
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
@@ -1316,6 +1336,91 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Lightweight JSON-schema validation (subset of JSON Schema)
+# ---------------------------------------------------------------------------
+
+def _strip_markdown_code_fences(text: str) -> str:
+    """Strip ```json ... ``` or ``` ... ``` markdown code fences."""
+    text = text.strip()
+    if text.startswith("```"):
+        first_nl = text.find("\n")
+        if first_nl != -1:
+            text = text[first_nl + 1:]
+        else:
+            return text
+        last_fence = text.rfind("```")
+        if last_fence != -1:
+            text = text[:last_fence].strip()
+    return text
+
+
+def _validate_response_schema(
+    value: Any, schema: Dict[str, Any], path: str = "$",
+) -> None:
+    """Validate *value* against a simplified JSON Schema.
+
+    Supports: type, required, properties, items, enum.
+    Recurses into nested objects and arrays.  Raises ``ValueError`` on
+    first mismatch.
+    """
+    if not isinstance(schema, dict):
+        return
+
+    # enum
+    if "enum" in schema:
+        if value not in schema["enum"]:
+            raise ValueError(
+                f"{path}: value {json.dumps(value)} not in enum {schema['enum']}"
+            )
+
+    # type
+    expected_type = schema.get("type")
+    if expected_type:
+        _TYPE_MAP = {
+            "object": dict,
+            "array": list,
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+        }
+        expected_py = _TYPE_MAP.get(expected_type)
+        if expected_py is not None and not isinstance(value, expected_py):
+            if expected_type == "integer" and isinstance(value, bool):
+                raise ValueError(
+                    f"{path}: expected type 'integer' but got boolean"
+                )
+            raise ValueError(
+                f"{path}: expected type '{expected_type}' but got "
+                f"{type(value).__name__}"
+            )
+
+        # number: reject plain bool (isinstance(True, int) is True in Python)
+        if expected_type == "number" and isinstance(value, bool):
+            raise ValueError(
+                f"{path}: expected type 'number' but got boolean"
+            )
+
+    # object properties
+    if expected_type == "object" and isinstance(value, dict):
+        for field in schema.get("required", []):
+            if field not in value:
+                raise ValueError(
+                    f"{path}: missing required field '{field}'"
+                )
+        for field, sub in schema.get("properties", {}).items():
+            if field in value:
+                _validate_response_schema(value[field], sub, f"{path}.{field}")
+
+    # array items
+    if expected_type == "array" and isinstance(value, list):
+        items_schema = schema.get("items")
+        if items_schema:
+            for i, item in enumerate(value):
+                _validate_response_schema(item, items_schema, f"{path}[{i}]")
 
 
 def _run_single_child(
@@ -1632,6 +1737,61 @@ def _run_single_child(
         else:
             status = "failed"
 
+        # --- response_schema validation with one retry ---
+        _schema = getattr(child, "_response_schema", None)
+        if _schema is not None and status == "completed" and summary:
+            raw = _strip_markdown_code_fences(summary)
+            _schema_err: Optional[Exception] = None
+            try:
+                parsed = json.loads(raw)
+                _validate_response_schema(parsed, _schema)
+                summary = raw  # use stripped version
+            except (json.JSONDecodeError, ValueError) as schema_err:
+                _schema_err = schema_err
+                logger.info(
+                    "Subagent %d output failed schema validation (%s) — retrying",
+                    task_index, schema_err,
+                )
+
+            if _schema_err is not None:
+                # Re-run the child once with the error appended to the goal
+                retry_goal = (
+                    goal + "\n\n"
+                    "PREVIOUS OUTPUT FAILED SCHEMA VALIDATION. Fix the output "
+                    f"to match the required schema. Error: {_schema_err}"
+                )
+                try:
+                    retry_result = child.run_conversation(
+                        user_message=retry_goal, task_id=child_task_id,
+                    )
+                    retry_summary = retry_result.get("final_response") or ""
+                    retry_raw = _strip_markdown_code_fences(retry_summary)
+                    try:
+                        retry_parsed = json.loads(retry_raw)
+                        _validate_response_schema(retry_parsed, _schema)
+                        summary = retry_raw
+                        # Merge retry API calls into the count
+                        retry_api = retry_result.get("api_calls", 0)
+                        api_calls = api_calls + retry_api
+                    except (json.JSONDecodeError, ValueError) as retry_err:
+                        logger.warning(
+                            "Subagent %d retry also failed schema validation: %s",
+                            task_index, retry_err,
+                        )
+                        summary = (
+                            f"[SCHEMA_VALIDATION_ERROR: {retry_err}] "
+                            f"Raw output: {retry_summary[:500]}"
+                        )
+                        status = "failed"
+                except Exception as retry_exc:
+                    logger.warning(
+                        "Subagent %d retry failed with exception: %s",
+                        task_index, retry_exc,
+                    )
+                    summary = f"[SCHEMA_VALIDATION_RETRY_ERROR: {retry_exc}]"
+                    status = "failed"
+                duration = round(time.monotonic() - child_start, 2)
+
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
         tool_trace: list[Dict[str, Any]] = []
@@ -1924,19 +2084,26 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    response_schema: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, response_schema)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, response_schema}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'response_schema' parameter (optional) is a simplified JSON Schema dict
+    that the child agent's output must conform to.  When set, the system prompt
+    instructs the child to return ONLY valid JSON, and the parent validates the
+    output with one automatic retry on failure.  Supports type, required,
+    properties, items, and enum keys.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2017,7 +2184,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "response_schema": response_schema,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2080,6 +2253,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                response_schema=t.get("response_schema"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2736,6 +2910,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "response_schema": {
+                            "type": "object",
+                            "description": (
+                                "Per-task JSON Schema the child's output must match. "
+                                "Supports type, required, properties, items, enum. "
+                                "Parent validates output with one auto-retry on failure."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2771,6 +2953,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "response_schema": {
+                "type": "object",
+                "description": (
+                    "Optional JSON Schema dict that the child agent's output must "
+                    "conform to. When set, the child is instructed to return ONLY "
+                    "valid JSON and the parent validates the output with one "
+                    "automatic retry on failure. Supports: type, required, "
+                    "properties, items, enum. Example: "
+                    '{"type": "object", "required": ["score"], "properties": {"score": {"type": "integer"}}}'
+                ),
+            },
         },
         "required": [],
     },
@@ -2793,6 +2986,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        response_schema=args.get("response_schema"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

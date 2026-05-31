@@ -10302,6 +10302,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth",
         "status",
         "cron",
+        "workflow",
         "doctor",
         "config",
         "pairing",
@@ -11165,6 +11166,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
+        "workflow",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11258,6 +11260,7 @@ _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
+    "workflow": ("workflow_command", {"run"}),
     "mcp": ("mcp_action", {"serve"}),
 }
 
@@ -12380,6 +12383,13 @@ def main():
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # workflow command
+    # =========================================================================
+    from hermes_cli.workflow import register_workflow_subparsers
+
+    register_workflow_subparsers(subparsers)
 
     # =========================================================================
     # webhook command

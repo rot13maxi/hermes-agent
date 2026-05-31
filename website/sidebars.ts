@@ -78,6 +78,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/cron',
             'user-guide/features/delegation',
+            'user-guide/features/workflows',
             'user-guide/features/kanban',
             'user-guide/features/codex-app-server-runtime',
             'user-guide/features/kanban-tutorial',

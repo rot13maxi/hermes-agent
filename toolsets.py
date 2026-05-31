@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Workflow orchestration
+    "workflow_run", "workflow_list",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -243,6 +245,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "workflow": {
+        "description": "Multi-agent workflow execution with checkpointed phases, parallel agents, and structured data flow",
+        "tools": ["workflow_run", "workflow_list"],
         "includes": []
     },
 

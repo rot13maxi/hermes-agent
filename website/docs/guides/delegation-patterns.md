@@ -23,6 +23,7 @@ For the full feature reference, see [Subagent Delegation](/user-guide/features/d
 **Use something else:**
 - Single tool call → just use the tool directly
 - Mechanical multi-step work with logic between steps → `execute_code`
+- Multi-phase pipelines with 3+ steps → [Workflows](/user-guide/features/workflows) support checkpoints, resume, and structured data flow
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
 - Durable long-running work that must outlive the current turn → `cronjob` or `terminal(background=True, notify_on_complete=True)`. `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.

@@ -257,6 +257,20 @@ For **durable long-running work** that must survive interrupts or outlive the cu
 
 **Rule of thumb:** Use `delegate_task` when the subtask requires reasoning, judgment, or multi-step problem solving. Use `execute_code` when you need mechanical data processing or scripted workflows.
 
+## Delegation vs Workflows
+
+| Factor | delegate_task | workflow_run |
+|--------|--------------|-------------|
+| **Scope** | Single call within a parent turn | Multi-phase pipeline (standalone process) |
+| **Structured output** | Optional via `response_schema` | Enforced via `response_schema` per phase |
+| **Survives interrupts** | No (children cancelled on parent interrupt) | Yes (checkpointed at each phase) |
+| **Resume** | No | `--resume` from last completed phase |
+| **Data flow** | Summary text returned to parent | Structured JSON between phases |
+| **Flow control** | None (flat call) | Real Python (`if`/`for`/early return) |
+| **Best for** | Parallel subtasks within a turn | Pipelines with 3+ interdependent phases |
+
+**Rule of thumb:** Use `delegate_task` for 1-3 parallel tasks within a single turn. Use workflows for multi-phase pipelines where phases depend on each other's structured output, or when the work needs to survive interrupts.
+
 ## Configuration
 
 ```yaml

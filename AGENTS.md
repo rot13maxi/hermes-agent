@@ -33,6 +33,7 @@ hermes-agent/
 ├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+├── hermes_workflow/      # Workflow engine — DAG runner, schema validation, display
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
@@ -744,6 +745,9 @@ Key config knobs (under `delegation:` in `config.yaml`):
 Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or
 `terminal(background=True, notify_on_complete=True)` instead.
+For multi-phase pipelines with checkpoints, structured data flow, and
+resume capability, use **workflows** (`hermes workflow run <script>` or
+`workflow_run` tool). See `hermes_workflow/` and `tools/workflow_tool.py`.
 
 ---
 
